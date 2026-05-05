@@ -46,6 +46,20 @@ from .fused_routing_dsv3 import (  # noqa: F401
     fused_topk_deepseek as fused_topk_deepseek,
 )
 
+# Multi-LoRA MoE BGMV kernels (conditionally imported)
+try:
+    from .bgmv_moe import (
+        bgmv_moe,
+        bgmv_moe_shrink,
+        bgmv_moe_expand,
+        fill_w_ptr,
+        has_bgmv_moe,
+    )
+
+    _bgmv_moe_available = True
+except ImportError:
+    _bgmv_moe_available = False
+
 # CuteDSL MoE APIs (conditionally imported if cute_dsl available)
 try:
     from .cute_dsl import (
@@ -84,6 +98,16 @@ __all__ = [
     "trtllm_mxint4_block_scale_moe",
     "fused_topk_deepseek",
 ]
+
+# Add BGMV MoE exports if available
+if _bgmv_moe_available:
+    __all__ += [
+        "bgmv_moe",
+        "bgmv_moe_shrink",
+        "bgmv_moe_expand",
+        "fill_w_ptr",
+        "has_bgmv_moe",
+    ]
 
 # Add CuteDSL exports if available
 if _cute_dsl_available:
