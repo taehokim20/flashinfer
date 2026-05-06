@@ -10,20 +10,18 @@
  */
 
 #include <torch/extension.h>
+
 #include "moe_bgmv_ops.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("bgmv_moe_shrink", &dispatch_bgmv_moe_shrink,
-        "BGMV MoE shrink kernel (multi-LoRA, expert-routed)",
-        py::arg("y"), py::arg("x"), py::arg("w_ptr"),
-        py::arg("sorted_token_ids"), py::arg("expert_ids"),
+        "BGMV MoE shrink kernel (multi-LoRA, expert-routed)", py::arg("y"), py::arg("x"),
+        py::arg("w_ptr"), py::arg("sorted_token_ids"), py::arg("expert_ids"),
         py::arg("lora_indices"), py::arg("lora_stride"));
 
   m.def("bgmv_moe_expand", &dispatch_bgmv_moe_expand,
-        "BGMV MoE expand kernel (multi-LoRA, expert-routed)",
-        py::arg("y"), py::arg("x"), py::arg("w_ptr"),
-        py::arg("sorted_token_ids"), py::arg("expert_ids"),
-        py::arg("topk_weights"), py::arg("lora_indices"),
-        py::arg("slice_start_loc"), py::arg("output_slices"),
-        py::arg("lora_stride"));
+        "BGMV MoE expand kernel (multi-LoRA, expert-routed)", py::arg("y"), py::arg("x"),
+        py::arg("w_ptr"), py::arg("sorted_token_ids"), py::arg("expert_ids"),
+        py::arg("topk_weights"), py::arg("lora_indices"), py::arg("slice_start_loc"),
+        py::arg("output_slices"), py::arg("lora_stride"));
 }

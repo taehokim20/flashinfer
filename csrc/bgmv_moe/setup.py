@@ -1,12 +1,11 @@
 """
-Build script for the BGMV MoE CUDA extension.
+Standalone build script for the BGMV MoE CUDA extension (development only).
 
-Usage:
+For production use, the kernel is compiled automatically via FlashInfer's
+JIT system on first use. This script is provided for development and testing:
+
     cd flashinfer/csrc/bgmv_moe
-    python setup.py install  # or: pip install -e .
-
-This builds the extension as a standalone module `flashinfer_bgmv_moe_cuda`
-that can be imported directly for testing.
+    pip install -e . --no-build-isolation
 
 Copyright (c) 2025 by FlashInfer team.
 Licensed under the Apache License, Version 2.0.
@@ -34,6 +33,11 @@ nvcc_flags = [
     "-O3",
     "--use_fast_math",
     "-std=c++17",
+    # Allow implicit __half <-> float conversions (PyTorch disables these by default)
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    "-U__CUDA_NO_HALF2_OPERATORS__",
     # Target architectures
     "-gencode=arch=compute_70,code=sm_70",
     "-gencode=arch=compute_80,code=sm_80",

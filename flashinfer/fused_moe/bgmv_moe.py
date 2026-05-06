@@ -1,16 +1,17 @@
 """
-Multi-LoRA MoE BGMV kernel Python wrappers.
-
-Provides fused shrink/expand operations for applying multiple LoRA adapters
-through MoE expert routing. Each (token, expert) pair is routed to the
-appropriate LoRA adapter based on lora_indices.
-
-Kernel pair:
-  - bgmv_moe_shrink: y[slice, pair, rank] += x[token] @ lora_a[expert, lora_id]
-  - bgmv_moe_expand: y[token, feat] += shrink_out[pair, rank] @ lora_b[expert, lora_id] * topk_weight
-
 Copyright (c) 2025 by FlashInfer team.
-Licensed under the Apache License, Version 2.0.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 """
 
 import functools
@@ -21,21 +22,40 @@ import torch
 
 @functools.cache
 def _get_bgmv_moe_module():
-    """Lazily load the BGMV MoE CUDA extension."""
+    """Lazily load the BGMV MoE CUDA extension.
+
+    Tries in order:
+    1. Pre-built standalone extension (flashinfer_bgmv_moe_cuda)
+    2. FlashInfer JIT compilation system
+    3. PyTorch JIT compilation fallback
+    """
+    # Option 1: Pre-built extension (pip install -e csrc/bgmv_moe/)
     try:
         import flashinfer_bgmv_moe_cuda
+
         return flashinfer_bgmv_moe_cuda
     except ImportError:
         pass
 
-    # Try JIT compilation as fallback
+    # Option 2: FlashInfer JIT system
+    try:
+        from ..jit.bgmv_moe import load_bgmv_moe_module
+
+        return load_bgmv_moe_module()
+    except (ImportError, FileNotFoundError, RuntimeError):
+        pass
+
+    # Option 3: PyTorch JIT compilation fallback
     try:
         from torch.utils.cpp_extension import load
         import os
 
         csrc_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "csrc", "bgmv_moe"
+            os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ),
+            "csrc",
+            "bgmv_moe",
         )
 
         sources = [
@@ -63,9 +83,9 @@ def _get_bgmv_moe_module():
     except Exception as e:
         raise ImportError(
             f"Failed to load BGMV MoE CUDA extension. "
-            f"Please build it first: cd flashinfer/csrc/bgmv_moe && pip install -e . "
+            f"Please build it first: cd flashinfer/csrc/bgmv_moe && pip install -e . --no-build-isolation\n"
             f"Error: {e}"
-        )
+        ) from e
 
 
 @functools.cache
@@ -108,8 +128,9 @@ def bgmv_moe_shrink(
             this is num_experts * rank * feat.
     """
     mod = _get_bgmv_moe_module()
-    mod.bgmv_moe_shrink(y, x, w_ptr, sorted_token_ids, expert_ids,
-                         lora_indices, lora_stride)
+    mod.bgmv_moe_shrink(
+        y, x, w_ptr, sorted_token_ids, expert_ids, lora_indices, lora_stride
+    )
 
 
 def bgmv_moe_expand(
@@ -143,9 +164,18 @@ def bgmv_moe_expand(
         lora_stride: Stride between LoRA adapters in weight tensor.
     """
     mod = _get_bgmv_moe_module()
-    mod.bgmv_moe_expand(y, x, w_ptr, sorted_token_ids, expert_ids,
-                         topk_weights, lora_indices, slice_start_loc,
-                         output_slices, lora_stride)
+    mod.bgmv_moe_expand(
+        y,
+        x,
+        w_ptr,
+        sorted_token_ids,
+        expert_ids,
+        topk_weights,
+        lora_indices,
+        slice_start_loc,
+        output_slices,
+        lora_stride,
+    )
 
 
 def fill_w_ptr(
@@ -232,8 +262,15 @@ def bgmv_moe(
 
     # Shrink: x @ lora_a -> [num_slices, num_pairs, rank]
     shrink_out = torch.zeros(num_slices, num_pairs, rank, dtype=dtype, device=device)
-    bgmv_moe_shrink(shrink_out, x, w_ptr_a, sorted_token_ids, expert_ids,
-                     lora_indices, lora_stride_a)
+    bgmv_moe_shrink(
+        shrink_out,
+        x,
+        w_ptr_a,
+        sorted_token_ids,
+        expert_ids,
+        lora_indices,
+        lora_stride_a,
+    )
 
     # Build w_ptr for expand (lora_b)
     w_ptr_b = torch.zeros(num_slices, num_experts, dtype=torch.int64, device=device)
@@ -250,8 +287,17 @@ def bgmv_moe(
 
     # Expand: shrink_out @ lora_b -> [num_tokens, total_feat_out]
     y = torch.zeros(num_tokens, total_feat_out, dtype=torch.float32, device=device)
-    bgmv_moe_expand(y, shrink_out, w_ptr_b, sorted_token_ids, expert_ids,
-                     topk_weights, lora_indices, slice_start_loc,
-                     feat_out_per_slice, lora_stride_b)
+    bgmv_moe_expand(
+        y,
+        shrink_out,
+        w_ptr_b,
+        sorted_token_ids,
+        expert_ids,
+        topk_weights,
+        lora_indices,
+        slice_start_loc,
+        feat_out_per_slice,
+        lora_stride_b,
+    )
 
     return y.to(dtype)

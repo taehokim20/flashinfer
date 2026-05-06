@@ -1,11 +1,22 @@
 """
-Correctness tests for the Multi-LoRA MoE BGMV CUDA kernels.
-
-Tests the shrink and expand kernels against a PyTorch reference implementation.
-
 Copyright (c) 2025 by FlashInfer team.
-Licensed under the Apache License, Version 2.0.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 """
+
+import os
+
+os.environ.setdefault("FLASHINFER_DISABLE_VERSION_CHECK", "1")
 
 import pytest
 import torch
@@ -17,11 +28,11 @@ import torch
 
 
 def reference_moe_bgmv_shrink(
-    x: torch.Tensor,           # [num_tokens, hidden_dim]
-    lora_a_weights: list,      # list of [max_loras, num_experts, rank, hidden_dim]
+    x: torch.Tensor,  # [num_tokens, hidden_dim]
+    lora_a_weights: list,  # list of [max_loras, num_experts, rank, hidden_dim]
     sorted_token_ids: torch.Tensor,  # [num_pairs]
-    expert_ids: torch.Tensor,        # [num_pairs]
-    lora_indices: torch.Tensor,      # [num_tokens]
+    expert_ids: torch.Tensor,  # [num_pairs]
+    lora_indices: torch.Tensor,  # [num_tokens]
 ) -> torch.Tensor:
     """
     Reference shrink: for each (token, expert) pair, compute x @ lora_a^T.
@@ -57,7 +68,7 @@ def reference_moe_bgmv_shrink(
 
 def reference_moe_bgmv_expand(
     shrink_out: torch.Tensor,  # [num_slices, num_pairs, rank]
-    lora_b_weights: list,      # list of [max_loras, num_experts, feat_out, rank]
+    lora_b_weights: list,  # list of [max_loras, num_experts, feat_out, rank]
     sorted_token_ids: torch.Tensor,
     expert_ids: torch.Tensor,
     lora_indices: torch.Tensor,
@@ -94,8 +105,8 @@ def reference_moe_bgmv_expand(
             w_b = lora_b_weights[s][lora_id, expert_id]  # [feat_out, rank]
             x_s = shrink_out[s, pair_idx]  # [rank]
             # y[token, col_offset:col_offset+feat_out] += topk_w * (x_s @ w_b^T)
-            y[token_idx, col_offset:col_offset + feat_out_per_slice[s]] += (
-                topk_w * (x_s @ w_b.t())
+            y[token_idx, col_offset : col_offset + feat_out_per_slice[s]] += topk_w * (
+                x_s @ w_b.t()
             )
             col_offset += feat_out_per_slice[s]
 
@@ -116,8 +127,13 @@ def reference_bgmv_moe(
         x, lora_a_weights, sorted_token_ids, expert_ids, lora_indices
     )
     y = reference_moe_bgmv_expand(
-        shrink_out, lora_b_weights, sorted_token_ids, expert_ids,
-        lora_indices, topk_weights, x.size(0)
+        shrink_out,
+        lora_b_weights,
+        sorted_token_ids,
+        expert_ids,
+        lora_indices,
+        topk_weights,
+        x.size(0),
     )
     return y
 
@@ -148,11 +164,15 @@ def generate_test_data(
     feat_out = hidden_size  # For simplicity, same as hidden_size
 
     lora_a_weights = [
-        torch.randn(max_loras, num_experts, rank, hidden_size, dtype=dtype, device=device) * 0.01
+        torch.randn(
+            max_loras, num_experts, rank, hidden_size, dtype=dtype, device=device
+        )
+        * 0.01
         for _ in range(num_slices)
     ]
     lora_b_weights = [
-        torch.randn(max_loras, num_experts, feat_out, rank, dtype=dtype, device=device) * 0.01
+        torch.randn(max_loras, num_experts, feat_out, rank, dtype=dtype, device=device)
+        * 0.01
         for _ in range(num_slices)
     ]
 
@@ -162,16 +182,26 @@ def generate_test_data(
     num_pairs = num_tokens * top_k
 
     # Simple routing: token i goes to experts [i*top_k % num_experts, ...]
-    sorted_token_ids = torch.arange(num_tokens, device=device, dtype=torch.int64).repeat_interleave(top_k)
-    expert_ids = torch.randint(0, num_experts, (num_pairs,), device=device, dtype=torch.int64)
-    topk_weights = torch.softmax(
-        torch.randn(num_tokens, top_k, device=device), dim=-1
-    ).view(-1).to(torch.float32)
+    sorted_token_ids = torch.arange(
+        num_tokens, device=device, dtype=torch.int64
+    ).repeat_interleave(top_k)
+    expert_ids = torch.randint(
+        0, num_experts, (num_pairs,), device=device, dtype=torch.int64
+    )
+    topk_weights = (
+        torch.softmax(torch.randn(num_tokens, top_k, device=device), dim=-1)
+        .view(-1)
+        .to(torch.float32)
+    )
 
     # LoRA indices: assign each token a random LoRA adapter (some may be -1 = no LoRA)
-    lora_indices = torch.randint(-1, max_loras, (num_tokens,), device=device, dtype=torch.int64)
+    lora_indices = torch.randint(
+        -1, max_loras, (num_tokens,), device=device, dtype=torch.int64
+    )
     # Ensure at least some tokens have valid LoRA
-    lora_indices[: num_tokens // 2] = torch.randint(0, max_loras, (num_tokens // 2,), device=device, dtype=torch.int64)
+    lora_indices[: num_tokens // 2] = torch.randint(
+        0, max_loras, (num_tokens // 2,), device=device, dtype=torch.int64
+    )
 
     return {
         "x": x,
@@ -203,7 +233,9 @@ class TestBgmvMoeShrink:
     @pytest.mark.parametrize("rank", [8, 16, 32])
     @pytest.mark.parametrize("num_experts", [8, 64])
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-    def test_shrink_correctness(self, num_tokens, hidden_size, rank, num_experts, dtype):
+    def test_shrink_correctness(
+        self, num_tokens, hidden_size, rank, num_experts, dtype
+    ):
         from flashinfer.fused_moe.bgmv_moe import bgmv_moe_shrink, fill_w_ptr
 
         top_k = 2
@@ -211,13 +243,23 @@ class TestBgmvMoeShrink:
         num_slices = 1
 
         data = generate_test_data(
-            num_tokens, hidden_size, rank, num_experts, top_k, num_loras, num_slices, dtype
+            num_tokens,
+            hidden_size,
+            rank,
+            num_experts,
+            top_k,
+            num_loras,
+            num_slices,
+            dtype,
         )
 
         # Reference
         ref_out = reference_moe_bgmv_shrink(
-            data["x"], data["lora_a_weights"],
-            data["sorted_token_ids"], data["expert_ids"], data["lora_indices"]
+            data["x"],
+            data["lora_a_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
         )
 
         # CUDA kernel
@@ -227,17 +269,23 @@ class TestBgmvMoeShrink:
 
         cuda_out = torch.zeros(num_slices, num_pairs, rank, dtype=dtype, device="cuda")
         bgmv_moe_shrink(
-            cuda_out, data["x"], w_ptr,
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], lora_stride
+            cuda_out,
+            data["x"],
+            w_ptr,
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            lora_stride,
         )
 
         # Compare
         torch.testing.assert_close(
-            cuda_out.float(), ref_out.float(),
-            atol=1e-2, rtol=1e-2,
+            cuda_out.float(),
+            ref_out.float(),
+            atol=1e-2,
+            rtol=1e-2,
             msg=f"Shrink mismatch: tokens={num_tokens}, hidden={hidden_size}, "
-                f"rank={rank}, experts={num_experts}, dtype={dtype}"
+            f"rank={rank}, experts={num_experts}, dtype={dtype}",
         )
 
 
@@ -250,7 +298,9 @@ class TestBgmvMoeExpand:
     @pytest.mark.parametrize("rank", [8, 16, 32])
     @pytest.mark.parametrize("num_experts", [8, 64])
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-    def test_expand_correctness(self, num_tokens, hidden_size, rank, num_experts, dtype):
+    def test_expand_correctness(
+        self, num_tokens, hidden_size, rank, num_experts, dtype
+    ):
         from flashinfer.fused_moe.bgmv_moe import bgmv_moe_expand, fill_w_ptr
 
         top_k = 2
@@ -258,24 +308,37 @@ class TestBgmvMoeExpand:
         num_slices = 1
 
         data = generate_test_data(
-            num_tokens, hidden_size, rank, num_experts, top_k, num_loras, num_slices, dtype
+            num_tokens,
+            hidden_size,
+            rank,
+            num_experts,
+            top_k,
+            num_loras,
+            num_slices,
+            dtype,
         )
 
         # Generate shrink output (use reference for isolation)
         shrink_out = reference_moe_bgmv_shrink(
-            data["x"], data["lora_a_weights"],
-            data["sorted_token_ids"], data["expert_ids"], data["lora_indices"]
+            data["x"],
+            data["lora_a_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
         )
 
         # Reference expand
         ref_out = reference_moe_bgmv_expand(
-            shrink_out, data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"], num_tokens
+            shrink_out,
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
+            num_tokens,
         )
 
         # CUDA kernel
-        num_pairs = data["num_pairs"]
         w_ptr = torch.zeros(num_slices, num_experts, dtype=torch.int64, device="cuda")
         lora_stride = fill_w_ptr(w_ptr, data["lora_b_weights"][0], num_experts, 0)
 
@@ -285,18 +348,26 @@ class TestBgmvMoeExpand:
 
         cuda_out = torch.zeros(num_tokens, feat_out, dtype=torch.float32, device="cuda")
         bgmv_moe_expand(
-            cuda_out, shrink_out, w_ptr,
-            data["sorted_token_ids"], data["expert_ids"],
-            data["topk_weights"], data["lora_indices"],
-            slice_start_loc, output_slices, lora_stride
+            cuda_out,
+            shrink_out,
+            w_ptr,
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["topk_weights"],
+            data["lora_indices"],
+            slice_start_loc,
+            output_slices,
+            lora_stride,
         )
 
         # Compare
         torch.testing.assert_close(
-            cuda_out, ref_out,
-            atol=1e-2, rtol=1e-2,
+            cuda_out,
+            ref_out,
+            atol=1e-2,
+            rtol=1e-2,
             msg=f"Expand mismatch: tokens={num_tokens}, hidden={hidden_size}, "
-                f"rank={rank}, experts={num_experts}, dtype={dtype}"
+            f"rank={rank}, experts={num_experts}, dtype={dtype}",
         )
 
 
@@ -317,30 +388,47 @@ class TestBgmvMoeEndToEnd:
         num_slices = 1
 
         data = generate_test_data(
-            num_tokens, hidden_size, rank, num_experts, top_k, num_loras, num_slices, dtype
+            num_tokens,
+            hidden_size,
+            rank,
+            num_experts,
+            top_k,
+            num_loras,
+            num_slices,
+            dtype,
         )
 
         # Reference
         ref_out = reference_bgmv_moe(
-            data["x"], data["lora_a_weights"], data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"]
+            data["x"],
+            data["lora_a_weights"],
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
         )
 
         # CUDA kernel (high-level API)
         cuda_out = bgmv_moe(
-            data["x"], data["lora_a_weights"], data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"],
-            num_experts
+            data["x"],
+            data["lora_a_weights"],
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
+            num_experts,
         )
 
         # Compare
         torch.testing.assert_close(
-            cuda_out.float(), ref_out.float(),
-            atol=5e-2, rtol=5e-2,
+            cuda_out.float(),
+            ref_out.float(),
+            atol=5e-2,
+            rtol=5e-2,
             msg=f"E2E mismatch: tokens={num_tokens}, hidden={hidden_size}, "
-                f"rank={rank}, experts={num_experts}, top_k={top_k}"
+            f"rank={rank}, experts={num_experts}, top_k={top_k}",
         )
 
 
@@ -358,16 +446,27 @@ class TestBgmvMoeEdgeCases:
         num_slices = 1
 
         data = generate_test_data(
-            num_tokens, hidden_size, rank, num_experts, top_k, num_loras, num_slices, dtype
+            num_tokens,
+            hidden_size,
+            rank,
+            num_experts,
+            top_k,
+            num_loras,
+            num_slices,
+            dtype,
         )
         # Set all lora_indices to -1
         data["lora_indices"].fill_(-1)
 
         out = bgmv_moe(
-            data["x"], data["lora_a_weights"], data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"],
-            num_experts
+            data["x"],
+            data["lora_a_weights"],
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
+            num_experts,
         )
 
         assert torch.all(out == 0), "Output should be zero when no LoRA is active"
@@ -382,24 +481,41 @@ class TestBgmvMoeEdgeCases:
         num_slices = 1
 
         data = generate_test_data(
-            num_tokens, hidden_size, rank, num_experts, top_k, num_loras, num_slices, dtype
+            num_tokens,
+            hidden_size,
+            rank,
+            num_experts,
+            top_k,
+            num_loras,
+            num_slices,
+            dtype,
         )
         data["lora_indices"][0] = 0  # Ensure valid LoRA
 
         ref_out = reference_bgmv_moe(
-            data["x"], data["lora_a_weights"], data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"]
+            data["x"],
+            data["lora_a_weights"],
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
         )
 
         cuda_out = bgmv_moe(
-            data["x"], data["lora_a_weights"], data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"],
-            num_experts
+            data["x"],
+            data["lora_a_weights"],
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
+            num_experts,
         )
 
-        torch.testing.assert_close(cuda_out.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
+        torch.testing.assert_close(
+            cuda_out.float(), ref_out.float(), atol=1e-2, rtol=1e-2
+        )
 
     def test_multi_slice_w13(self):
         """Test with 2 slices (simulating gate+up projection)."""
@@ -411,23 +527,40 @@ class TestBgmvMoeEdgeCases:
         num_slices = 2
 
         data = generate_test_data(
-            num_tokens, hidden_size, rank, num_experts, top_k, num_loras, num_slices, dtype
+            num_tokens,
+            hidden_size,
+            rank,
+            num_experts,
+            top_k,
+            num_loras,
+            num_slices,
+            dtype,
         )
 
         ref_out = reference_bgmv_moe(
-            data["x"], data["lora_a_weights"], data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"]
+            data["x"],
+            data["lora_a_weights"],
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
         )
 
         cuda_out = bgmv_moe(
-            data["x"], data["lora_a_weights"], data["lora_b_weights"],
-            data["sorted_token_ids"], data["expert_ids"],
-            data["lora_indices"], data["topk_weights"],
-            num_experts
+            data["x"],
+            data["lora_a_weights"],
+            data["lora_b_weights"],
+            data["sorted_token_ids"],
+            data["expert_ids"],
+            data["lora_indices"],
+            data["topk_weights"],
+            num_experts,
         )
 
-        torch.testing.assert_close(cuda_out.float(), ref_out.float(), atol=5e-2, rtol=5e-2)
+        torch.testing.assert_close(
+            cuda_out.float(), ref_out.float(), atol=5e-2, rtol=5e-2
+        )
 
 
 if __name__ == "__main__":
